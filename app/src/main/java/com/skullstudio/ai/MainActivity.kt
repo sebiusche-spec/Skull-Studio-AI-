@@ -62,7 +62,7 @@ fun StudioApp() {
         characterUri = it
     }
     val layerPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
-        if (it != null) layers.add(CharacterLayer(pendingKind, it))
+        if (it != null) { layers.removeAll { layer -> layer.kind == pendingKind }; layers.add(CharacterLayer(pendingKind, it)) }
     }
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
         audioUri = it
