@@ -41,6 +41,10 @@ private enum class LayerKind(val title: String) {
 }
 private data class CharacterLayer(val kind: LayerKind, val uri: Uri)
 
+private enum class MotionPreset(val title: String) {
+    IDLE("Idle"), WALK("Walk"), RUN("Run"), TALK("Talk"), JUMP("Jump"), WAVE("Wave")
+}
+
 @Composable
 fun StudioApp() {
     val cyan = Color(0xFF00E5FF)
@@ -51,6 +55,7 @@ fun StudioApp() {
     val layers = remember { mutableStateListOf<CharacterLayer>() }
     var pendingKind by remember { mutableStateOf(LayerKind.HAIR) }
     var animateLayers by remember { mutableStateOf(false) }
+    var motionPreset by remember { mutableStateOf(MotionPreset.IDLE) }
     var windEnabled by remember { mutableStateOf(false) }
     var ratio by remember { mutableStateOf("9:16") }
     var audioUri by remember { mutableStateOf<Uri?>(null) }
@@ -88,6 +93,24 @@ fun StudioApp() {
         animationSpec = infiniteRepeatable(tween(3200, easing = LinearEasing), RepeatMode.Restart),
         label = "motion-phase"
     )
+    val motionPhase by transition.animateFloat(
+        initialValue = 0f, targetValue = (2f * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(when (motionPreset) {
+            MotionPreset.RUN -> 420
+            MotionPreset.WALK -> 900
+            MotionPreset.TALK -> 700
+            MotionPreset.JUMP -> 1100
+            MotionPreset.WAVE -> 850
+            MotionPreset.IDLE -> 2600
+        }, easing = LinearEasing), RepeatMode.Restart), label = "preset-loop"
+    )
+    val motionWave = sin(motionPhase).toFloat()
+    val motionLift = when (motionPreset) {
+        MotionPreset.WALK -> kotlin.math.abs(motionWave) * 5f
+        MotionPreset.RUN -> kotlin.math.abs(motionWave) * 11f
+        MotionPreset.JUMP -> (1f - kotlin.math.cos(motionPhase)) * 13f
+        else -> 0f
+    }
     val windPhase by transition.animateFloat(
         initialValue = 0f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
@@ -112,17 +135,27 @@ fun StudioApp() {
                 if (characterUri != null) {
                     AsyncImage(
                         model = characterUri, contentDescription = "Original character",
-                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit
+                        modifier = Modifier.fillMaxSize().graphicsLayer {
+                            scaleY = 1f + if (motionPreset == MotionPreset.IDLE) motionWave * 0.012f else 0f
+                            translationY = motionLift
+                            rotationZ = when (motionPreset) {
+                                MotionPreset.WALK -> motionWave * 1.2f
+                                MotionPreset.RUN -> motionWave * 2.4f
+                                MotionPreset.TALK -> motionWave * 0.25f
+                                else -> 0f
+                            }
+                        }, contentScale = ContentScale.Fit
                     )
                     layers.forEachIndexed { index, layer ->
                         val wave = kotlin.math.sin(phase + index * 0.72f).toFloat()
                         val amount = if (animateLayers) wave else 0f
                         // Small amplitudes look more natural for a still illustration.
+                        val presetAmount = sin(motionPhase + index * 1.1f).toFloat()
                         val rotation = when (layer.kind) {
-                            LayerKind.HAIR -> amount * 1.6f
-                            LayerKind.ARM -> amount * 2.2f
-                            LayerKind.CLOTH -> amount * 0.8f
-                            LayerKind.LEG -> amount * 1.8f
+                            LayerKind.HAIR -> amount * 1.6f + if (motionPreset == MotionPreset.IDLE || motionPreset == MotionPreset.WALK) presetAmount * 1.3f else 0f
+                            LayerKind.ARM -> amount * 2.2f + if (motionPreset == MotionPreset.WAVE) presetAmount * 22f else if (motionPreset == MotionPreset.WALK || motionPreset == MotionPreset.RUN) presetAmount * 12f else 0f
+                            LayerKind.CLOTH -> amount * 0.8f + if (motionPreset == MotionPreset.RUN) presetAmount * 2f else 0f
+                            LayerKind.LEG -> amount * 1.8f + if (motionPreset == MotionPreset.WALK) presetAmount * 13f else if (motionPreset == MotionPreset.RUN) presetAmount * 24f else 0f
                         }
                         val vertical = when (layer.kind) {
                             LayerKind.HAIR -> amount * 2.2f
@@ -166,6 +199,13 @@ fun StudioApp() {
                 Text("IMPORT CHARACTER PNG")
             }
 
+            SectionTitle("LOOP ANIMATION PRESETS", cyan)
+            Text("Select a continuously repeating motion preview. Separate transparent body-part layers are needed for proper limb articulation.", color = Color.LightGray, fontSize = 11.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                MotionPreset.values().forEach { preset ->
+                    FilterChip(selected = motionPreset == preset, onClick = { motionPreset = preset }, label = { Text(preset.title, fontSize = 10.sp) })
+                }
+            }
             SectionTitle("CHARACTER LAYER SETUP", cyan)
             Text(
                 "For independent movement, import transparent PNG cut-outs made on the same canvas size and position as the original image.",
@@ -243,7 +283,7 @@ fun StudioApp() {
                     FilterChip(selected = ratio == value, onClick = { ratio = value }, label = { Text(value) })
                 }
             }
-            Text("Next stages: body-part segmentation, joint-based rigging, original-mouth lip-sync, script pauses, multi-track audio mixer and MP4 export.", color = Color(0xFFFFD54F), fontSize = 11.sp)
+            Text("CURRENT BUILD: looping motion preview only. GIF / MP4 export, drawing canvas, joint rigging and mouth-preserving lip-sync are not implemented yet.", color = Color(0xFFFFD54F), fontSize = 11.sp)
         }
     }
 }
