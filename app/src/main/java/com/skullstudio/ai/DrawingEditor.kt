@@ -2,6 +2,8 @@ package com.skullstudio.ai
 
 import android.graphics.Bitmap
 import android.graphics.Paint as AndroidPaint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.Path as AndroidPath
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,12 +27,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.layout.onSizeChanged
 import kotlinx.coroutines.launch
 
 private data class InkStroke(
     val path: Path,
     val color: Color,
-    val width: Float
+    val width: Float,
+    val erase: Boolean
 )
 
 @Composable
@@ -56,6 +60,7 @@ fun DrawingEditor(onClose: () -> Unit) {
                     strokes.forEach { stroke ->
                         val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
                             color = stroke.color.value.toLong().toInt()
+                            xfermode = if (stroke.erase) PorterDuffXfermode(PorterDuff.Mode.CLEAR) else null
                             style = AndroidPaint.Style.STROKE
                             strokeWidth = stroke.width
                             strokeCap = AndroidPaint.Cap.ROUND
@@ -87,19 +92,16 @@ fun DrawingEditor(onClose: () -> Unit) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             colors.forEach { color ->
-                Box(Modifier.size(30.dp).background(color, RoundedCornerShape(50)).border(1.dp, Color.Gray, RoundedCornerShape(50)))
-                .let { }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            colors.forEach { color ->
                 Surface(onClick = { selectedColor = color; eraser = false }, shape = RoundedCornerShape(50), color = color, modifier = Modifier.size(30.dp).border(if (selectedColor == color && !eraser) 3.dp else 1.dp, Color.White, RoundedCornerShape(50))) {}
             }
         }
         Text("Brush size: ${brushWidth.toInt()} px", color = Color.LightGray, fontSize = 12.sp)
         Slider(value = brushWidth, onValueChange = { brushWidth = it }, valueRange = 2f..36f)
         Canvas(
-            Modifier.fillMaxWidth().weight(1f).background(Color(0xFF182235), RoundedCornerShape(12.dp))
+            Modifier.fillMaxWidth().weight(1f).onSizeChanged {
+                canvasWidth = it.width.toFloat()
+                canvasHeight = it.height.toFloat()
+            }.background(Color(0xFF182235), RoundedCornerShape(12.dp))
                 .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(12.dp))
                 .pointerInput(eraser, selectedColor, brushWidth) {
                     detectDragGestures(
@@ -107,12 +109,16 @@ fun DrawingEditor(onClose: () -> Unit) {
                             currentPath = Path().apply { moveTo(start.x, start.y) }
                         },
                         onDrag = { change, _ ->
-                            currentPath?.lineTo(change.position.x, change.position.y)
+                            val previous = currentPath
+                            currentPath = Path().apply {
+                                if (previous != null) addPath(previous)
+                                lineTo(change.position.x, change.position.y)
+                            }
                             change.consume()
                         },
                         onDragEnd = {
                             currentPath?.let { path ->
-                                strokes.add(InkStroke(path, if (eraser) Color.Transparent else selectedColor, if (eraser) brushWidth * 3f else brushWidth))
+                                strokes.add(InkStroke(path, if (eraser) Color.Transparent else selectedColor, if (eraser) brushWidth * 3f else brushWidth, eraser))
                             }
                             currentPath = null
                         },
@@ -120,8 +126,6 @@ fun DrawingEditor(onClose: () -> Unit) {
                     )
                 }
         ) {
-            canvasWidth = size.width
-            canvasHeight = size.height
             strokes.forEach { stroke ->
                 if (stroke.color == Color.Transparent) {
                     drawPath(stroke.path, Color(0xFF182235), style = Stroke(stroke.width * 3f, cap = StrokeCap.Round))
