@@ -1,5 +1,6 @@
 package com.skullstudio.ai
 
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -7,17 +8,26 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.*
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.*
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,175 +36,216 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class RigPoint(val label: String, val start: Offset)
+private enum class LayerKind(val title: String) {
+    HAIR("Hair"), ARM("Arm / Hand"), CLOTH("Clothes"), LEG("Leg")
+}
+private data class CharacterLayer(val kind: LayerKind, val uri: Uri)
 
 @Composable
 fun StudioApp() {
-    var image by remember { mutableStateOf<Uri?>(null) }
-    var motion by remember { mutableStateOf("Idle") }
-    var ratio by remember { mutableStateOf("9:16") }
-    var rigMode by remember { mutableStateOf(false) }
-    var faceMode by remember { mutableStateOf(false) }
-    var mouthPreview by remember { mutableStateOf(false) }
-    val bodyPoints = remember {
-        mutableStateListOf(
-            RigPoint("Head", Offset(.50f, .25f)), RigPoint("Neck", Offset(.50f, .40f)),
-            RigPoint("Left shoulder", Offset(.39f, .47f)), RigPoint("Left elbow", Offset(.20f, .67f)),
-            RigPoint("Left wrist", Offset(.45f, .62f)), RigPoint("Right shoulder", Offset(.61f, .47f)),
-            RigPoint("Right elbow", Offset(.80f, .67f)), RigPoint("Right wrist", Offset(.55f, .62f)),
-            RigPoint("Hip", Offset(.50f, .76f))
-        )
-    }
-    val facePoints = remember {
-        mutableStateListOf(
-            RigPoint("Left eye", Offset(.44f, .30f)), RigPoint("Right eye", Offset(.56f, .30f)),
-            RigPoint("Mouth centre", Offset(.50f, .37f)), RigPoint("Mouth left corner", Offset(.47f, .37f)),
-            RigPoint("Mouth right corner", Offset(.53f, .37f))
-        )
-    }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { image = it }
-    val bg = Color(0xFF070A14)
     val cyan = Color(0xFF00E5FF)
-    val mouthTransition = rememberInfiniteTransition(label = "mouth")
-    val mouthAmount by mouthTransition.animateFloat(
+    val bg = Color(0xFF070A14)
+    val panel = Color(0xFF111827)
+    val context = LocalContext.current
+    var characterUri by remember { mutableStateOf<Uri?>(null) }
+    val layers = remember { mutableStateListOf<CharacterLayer>() }
+    var pendingKind by remember { mutableStateOf(LayerKind.HAIR) }
+    var animateLayers by remember { mutableStateOf(false) }
+    var windEnabled by remember { mutableStateOf(false) }
+    var ratio by remember { mutableStateOf("9:16") }
+    var audioUri by remember { mutableStateOf<Uri?>(null) }
+    var volume by remember { mutableFloatStateOf(0.8f) }
+    var audioPlaying by remember { mutableStateOf(false) }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        characterUri = it
+    }
+    val layerPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        if (it != null) layers.add(CharacterLayer(pendingKind, it))
+    }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        audioUri = it
+        audioPlaying = false
+    }
+
+    DisposableEffect(audioUri) {
+        player?.release()
+        player = audioUri?.let { uri -> runCatching { MediaPlayer.create(context, uri) }.getOrNull() }
+        player?.setVolume(volume, volume)
+        onDispose {
+            player?.release()
+            player = null
+            audioPlaying = false
+        }
+    }
+    LaunchedEffect(volume, player) { player?.setVolume(volume, volume) }
+
+    val transition = rememberInfiniteTransition(label = "layer-motion")
+    val phase by transition.animateFloat(
+        initialValue = -1f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(850, easing = LinearEasing), RepeatMode.Reverse),
+        label = "motion-phase"
+    )
+    val windPhase by transition.animateFloat(
         initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(220, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "mouthOpen"
+        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
+        label = "wind-phase"
     )
 
-    MaterialTheme(colorScheme = darkColorScheme(background = bg, surface = Color(0xFF111827), primary = cyan)) {
-        Column(Modifier.fillMaxSize().background(bg).verticalScroll(rememberScrollState()).padding(16.dp)) {
+    MaterialTheme(colorScheme = darkColorScheme(background = bg, surface = panel, primary = cyan)) {
+        Column(
+            Modifier.fillMaxSize().background(bg).verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Text("SKULL STUDIO AI", color = cyan, fontSize = 25.sp)
-            Text("DRAW • RIG • ANIMATE", color = Color.LightGray, fontSize = 11.sp)
-            Spacer(Modifier.height(16.dp))
+            Text("2D CHARACTER • LAYERS • AUDIO", color = Color.LightGray, fontSize = 11.sp)
+
             BoxWithConstraints(
-                Modifier.fillMaxWidth().height(if (ratio == "9:16") 430.dp else 240.dp)
-                    .background(Color(0xFF151D2E), RoundedCornerShape(18.dp))
+                Modifier.fillMaxWidth()
+                    .height(if (ratio == "9:16") 430.dp else 245.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xFF151D2E))
                     .border(1.dp, cyan, RoundedCornerShape(18.dp))
             ) {
-                if (image != null) {
-                    androidx.compose.ui.viewinterop.AndroidView(
-                        factory = { context -> android.widget.ImageView(context).apply {
-                            setImageURI(image)
-                            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                        } },
-                        update = { it.setImageURI(image) },
-                        modifier = Modifier.fillMaxSize()
+                if (characterUri != null) {
+                    AsyncImage(
+                        model = characterUri, contentDescription = "Original character",
+                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit
                     )
-                    if (mouthPreview) {
+                    layers.forEachIndexed { index, layer ->
+                        val amount = if (animateLayers) phase else 0f
+                        val rotation = when (layer.kind) {
+                            LayerKind.HAIR -> amount * 3.5f
+                            LayerKind.ARM -> amount * 7f
+                            LayerKind.CLOTH -> amount * 1.8f
+                            LayerKind.LEG -> amount * 6f
+                        }
+                        val vertical = when (layer.kind) {
+                            LayerKind.HAIR -> amount * 4f
+                            LayerKind.ARM -> amount * 1.5f
+                            LayerKind.CLOTH -> amount * 2.5f
+                            LayerKind.LEG -> amount * 2f
+                        }
+                        AsyncImage(
+                            model = layer.uri, contentDescription = "${layer.kind.title} animation layer",
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                rotationZ = rotation
+                                translationY = vertical
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
+                                    if (layer.kind == LayerKind.ARM) 0.25f else 0.5f,
+                                    if (layer.kind == LayerKind.HAIR) 0.8f else 0.5f
+                                )
+                            },
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                    if (windEnabled) {
                         Canvas(Modifier.fillMaxSize()) {
-                            val p = facePoints[2].start
-                            val center = Offset(p.x * size.width, p.y * size.height)
-                            val skin = Color(0xFFFFA18F)
-                            val lip = Color(0xFFC2185B)
-                            val mouthWidth = size.width * .075f
-                            val mouthHeight = size.height * (.009f + .035f * mouthAmount)
-                            drawOval(skin, topLeft = Offset(center.x - mouthWidth * .72f, center.y - size.height * .014f),
-                                size = androidx.compose.ui.geometry.Size(mouthWidth * 1.44f, size.height * .030f))
-                            drawOval(lip, topLeft = Offset(center.x - mouthWidth / 2, center.y - mouthHeight / 2),
-                                size = androidx.compose.ui.geometry.Size(mouthWidth, mouthHeight))
-                            if (mouthAmount > .35f) {
-                                drawOval(Color(0xFF4A1026),
-                                    topLeft = Offset(center.x - mouthWidth * .27f, center.y - mouthHeight * .20f),
-                                    size = androidx.compose.ui.geometry.Size(mouthWidth * .54f, mouthHeight * .40f))
+                            repeat(18) { i ->
+                                val x = ((i * 67f + windPhase * size.width * 1.4f) % size.width)
+                                val y = (i * 41f % size.height)
+                                drawLine(
+                                    Color(0x8879E8FF),
+                                    androidx.compose.ui.geometry.Offset(x, y),
+                                    androidx.compose.ui.geometry.Offset(x + 22f, y - 5f),
+                                    strokeWidth = 1.5f
+                                )
                             }
                         }
                     }
-                    if (rigMode || faceMode) {
-                        Canvas(Modifier.fillMaxSize().pointerInput(rigMode, faceMode) {
-                            var active = -1
-                            val activePoints = if (faceMode) facePoints else bodyPoints
-                            detectDragGestures(
-                                onDragStart = { pos ->
-                                    val w = size.width.toFloat().coerceAtLeast(1f)
-                                    val h = size.height.toFloat().coerceAtLeast(1f)
-                                    active = activePoints.indices.minByOrNull { i ->
-                                        val p = activePoints[i].start
-                                        (Offset(p.x * w, p.y * h) - pos).getDistance()
-                                    } ?: -1
-                                },
-                                onDrag = { change, drag ->
-                                    change.consume()
-                                    if (active >= 0) {
-                                        val w = size.width.toFloat().coerceAtLeast(1f)
-                                        val h = size.height.toFloat().coerceAtLeast(1f)
-                                        val p = activePoints[active]
-                                        activePoints[active] = p.copy(start = Offset(
-                                            (p.start.x + drag.x / w).coerceIn(0f, 1f),
-                                            (p.start.y + drag.y / h).coerceIn(0f, 1f)
-                                        ))
-                                    }
-                                },
-                                onDragEnd = { active = -1 }, onDragCancel = { active = -1 }
-                            )
-                        }) {
-                            val w = size.width; val h = size.height
-                            val pts = if (faceMode) facePoints else bodyPoints
-                            if (faceMode) pts.forEach { p ->
-                                val c = Offset(p.start.x * w, p.start.y * h)
-                                drawCircle(Color(0xFFFFD54F), 10f, c)
-                                drawCircle(Color.Black, 4f, c)
-                            } else {
-                                val links = listOf(0 to 1, 1 to 2, 2 to 3, 3 to 4, 1 to 5, 5 to 6, 6 to 7, 1 to 8)
-                                links.forEach { (a,b) -> drawLine(cyan,
-                                    Offset(pts[a].start.x*w, pts[a].start.y*h),
-                                    Offset(pts[b].start.x*w, pts[b].start.y*h), 4f) }
-                                pts.forEach { p -> drawCircle(Color(0xFFFFD54F), 13f, Offset(p.start.x*w,p.start.y*h)) }
-                            }
-                        }
-                    }
-                } else Text("Import your character drawing", color = Color.LightGray, modifier = Modifier.align(Alignment.Center))
-            }
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = { picker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("IMPORT DRAWING") }
-            Spacer(Modifier.height(12.dp))
-            RigToggle("BODY RIG GUIDE", "Drag yellow joints to match the body.", rigMode, image != null) {
-                rigMode = it; if (it) faceMode = false
-            }
-            RigToggle("FACE RIG GUIDE", "Place eye and mouth markers manually.", faceMode, image != null) {
-                faceMode = it; if (it) rigMode = false
-            }
-            if (faceMode && image != null) {
-                facePoints.forEach { Text("• ${it.label}", color = Color(0xFFFFD54F), fontSize = 11.sp) }
-                Text("Guide points only; they do not cut or deform the PNG.", color = Color.LightGray, fontSize = 11.sp)
-            }
-            Spacer(Modifier.height(14.dp))
-            Text("TALKING MOUTH TEST", color = cyan)
-            Button(onClick = { mouthPreview = !mouthPreview }, enabled = image != null, modifier = Modifier.fillMaxWidth()) {
-                Text(if (mouthPreview) "STOP MOUTH ANIMATION" else "START MOUTH ANIMATION")
-            }
-            Text(if (mouthPreview) "Animated mouth overlay preview is running. This is not voice lip-sync." else "Tap Start to see the mouth open and close.", color = Color.LightGray, fontSize = 11.sp)
-            Spacer(Modifier.height(18.dp))
-            Text("AUDIO FX STUDIO", color = cyan, fontSize = 18.sp)
-            Text("Planned mixer: voice-over • background music • SFX • volume • fade • final MP4 export.", color = Color.LightGray, fontSize = 12.sp)
-            Text("Audio mixing and MP4 export are not implemented in this build yet.", color = Color(0xFFFFD54F), fontSize = 11.sp)
-            Spacer(Modifier.height(14.dp))
-            Text("MOTION PREVIEW", color = cyan)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("Idle", "Walk", "Run", "Afraid").forEach { preset ->
-                    FilterChip(selected = motion == preset, onClick = { motion = preset }, label = { Text(preset) })
+                } else {
+                    Text("Import your character PNG", color = Color.LightGray, modifier = Modifier.align(Alignment.Center))
                 }
             }
-            Text("Motion presets are selection-only until movable character layers are built.", color = Color.LightGray, fontSize = 11.sp)
-            Spacer(Modifier.height(14.dp))
-            Text("VIDEO CANVAS", color = cyan)
+
+            Button(onClick = { imagePicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
+                Text("IMPORT CHARACTER PNG")
+            }
+
+            SectionTitle("CHARACTER LAYER SETUP", cyan)
+            Text(
+                "For independent movement, import transparent PNG cut-outs made on the same canvas size and position as the original image.",
+                color = Color.LightGray, fontSize = 12.sp
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                LayerKind.values().forEach { kind ->
+                    FilterChip(
+                        selected = pendingKind == kind,
+                        onClick = { pendingKind = kind },
+                        label = { Text(kind.title, fontSize = 11.sp) }
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = { layerPicker.launch("image/png") },
+                enabled = characterUri != null,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("ADD SELECTED TRANSPARENT LAYER") }
+
+            if (layers.isNotEmpty()) {
+                layers.forEachIndexed { index, layer ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("${index + 1}. ${layer.kind.title} layer", color = Color.White, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { layers.removeAt(index) }) { Text("Remove", color = Color(0xFFFF8A80)) }
+                    }
+                }
+            } else {
+                Text("No separate layers yet. A single flattened PNG cannot move its hair, arms or clothes independently.", color = Color(0xFFFFD54F), fontSize = 11.sp)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("ANIMATE IMPORTED LAYERS", color = cyan)
+                    Text("Subtle independent sway / rotation preview", color = Color.LightGray, fontSize = 11.sp)
+                }
+                Switch(checked = animateLayers, onCheckedChange = { animateLayers = it }, enabled = layers.isNotEmpty())
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("WIND PARTICLE EFFECT", color = cyan)
+                    Text("Animated wind streaks over the scene", color = Color.LightGray, fontSize = 11.sp)
+                }
+                Switch(checked = windEnabled, onCheckedChange = { windEnabled = it }, enabled = characterUri != null)
+            }
+
+            SectionTitle("AUDIO FX STUDIO", cyan)
+            Text("Import an audio track and preview its volume. Multi-track mixing and final MP4 export are not in this milestone yet.", color = Color.LightGray, fontSize = 12.sp)
+            OutlinedButton(onClick = { audioPicker.launch("audio/*") }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (audioUri == null) "IMPORT AUDIO" else "CHANGE AUDIO")
+            }
+            if (audioUri != null) {
+                Text("Audio loaded", color = Color.White, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = {
+                        val p = player
+                        if (p != null) {
+                            if (audioPlaying) p.pause() else {
+                                if (!p.isPlaying) {
+                                    if (runCatching { p.currentPosition >= p.duration }.getOrDefault(false)) p.seekTo(0)
+                                    p.start()
+                                }
+                            }
+                            audioPlaying = !audioPlaying
+                        }
+                    }) { Text(if (audioPlaying) "PAUSE" else "PLAY PREVIEW") }
+                    TextButton(onClick = { player?.pause(); player?.seekTo(0); audioPlaying = false }) { Text("STOP") }
+                }
+                Text("Volume: ${(volume * 100).toInt()}%", color = Color.LightGray, fontSize = 11.sp)
+                Slider(value = volume, onValueChange = { volume = it })
+            }
+
+            SectionTitle("VIDEO CANVAS", cyan)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("9:16", "16:9").forEach { canvas ->
-                    FilterChip(selected = ratio == canvas, onClick = { ratio = canvas }, label = { Text(canvas) })
+                listOf("9:16", "16:9").forEach { value ->
+                    FilterChip(selected = ratio == value, onClick = { ratio = value }, label = { Text(value) })
                 }
             }
+            Text("Next stages: body-part segmentation, joint-based rigging, original-mouth lip-sync, script pauses, multi-track audio mixer and MP4 export.", color = Color(0xFFFFD54F), fontSize = 11.sp)
         }
     }
 }
 
 @Composable
-private fun RigToggle(title: String, description: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, color = Color(0xFF00E5FF))
-            Text(description, color = Color.LightGray, fontSize = 11.sp)
-        }
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
-    }
-    Spacer(Modifier.height(8.dp))
+private fun SectionTitle(value: String, color: Color) {
+    Text(value, color = color, fontSize = 17.sp)
 }
