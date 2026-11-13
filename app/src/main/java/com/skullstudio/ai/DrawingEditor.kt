@@ -11,10 +11,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -36,27 +39,40 @@ private data class InkStroke(
     val path: Path,
     val color: Color,
     val width: Float,
-    val erase: Boolean
+    val erase: Boolean,
+    val alpha: Float
 )
+
+private class SketchLayer(val title: String) {
+    val strokes = mutableStateListOf<InkStroke>()
+    var visible by mutableStateOf(true)
+    var opacity by mutableFloatStateOf(1f)
+}
+
+private enum class DrawTool(val label: String) {
+    BRUSH("Brush"), PENCIL("Pencil"), MARKER("Marker"), ERASER("Eraser")
+}
 
 @Composable
 fun DrawingEditor(onClose: () -> Unit) {
     val context = LocalContext.current
-    val strokes = remember { mutableStateListOf<InkStroke>() }
+    val layers = remember { mutableStateListOf(SketchLayer("Layer 1")) }
+    var selectedLayer by remember { mutableIntStateOf(0) }
     var currentPath by remember { mutableStateOf<Path?>(null) }
     var hue by remember { mutableFloatStateOf(190f) }
     var saturation by remember { mutableFloatStateOf(1f) }
     var brightness by remember { mutableFloatStateOf(1f) }
     val selectedColor = Color.hsv(hue, saturation, brightness)
     var brushWidth by remember { mutableFloatStateOf(8f) }
-    var eraser by remember { mutableStateOf(false) }
+    var tool by remember { mutableStateOf(DrawTool.BRUSH) }
     var canvasWidth by remember { mutableFloatStateOf(1f) }
     var canvasHeight by remember { mutableFloatStateOf(1f) }
     var referenceUri by remember { mutableStateOf<Uri?>(null) }
     var referenceOpacity by remember { mutableFloatStateOf(0.35f) }
     var referenceZoom by remember { mutableFloatStateOf(1f) }
-    var exportMessage by remember { mutableStateOf("Use a reference image underneath your drawing, then trace it on a new layer.") }
+    var exportMessage by remember { mutableStateOf("Reference stays separate. Draw on editable layers.") }
     val scope = rememberCoroutineScope()
+    val activeLayer = layers.getOrNull(selectedLayer) ?: layers.first()
     val referencePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
         referenceUri = it
     }
@@ -66,71 +82,91 @@ fun DrawingEditor(onClose: () -> Unit) {
                 runCatching {
                     val w = canvasWidth.toInt().coerceAtLeast(1)
                     val h = canvasHeight.toInt().coerceAtLeast(1)
-                    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                    val canvas = android.graphics.Canvas(bitmap)
-                    strokes.forEach { stroke ->
-                        val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
-                            color = stroke.color.value.toLong().toInt()
-                            xfermode = if (stroke.erase) PorterDuffXfermode(PorterDuff.Mode.CLEAR) else null
-                            style = AndroidPaint.Style.STROKE
-                            strokeWidth = stroke.width
-                            strokeCap = AndroidPaint.Cap.ROUND
-                            strokeJoin = AndroidPaint.Join.ROUND
+                    val output = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    val outputCanvas = android.graphics.Canvas(output)
+                    layers.filter { it.visible }.forEach { layer ->
+                        val layerBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        val layerCanvas = android.graphics.Canvas(layerBitmap)
+                        layer.strokes.forEach { stroke ->
+                            val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                                color = stroke.color.value.toLong().toInt()
+                                alpha = (stroke.alpha * 255f).toInt().coerceIn(0, 255)
+                                xfermode = if (stroke.erase) PorterDuffXfermode(PorterDuff.Mode.CLEAR) else null
+                                style = AndroidPaint.Style.STROKE
+                                strokeWidth = stroke.width
+                                strokeCap = AndroidPaint.Cap.ROUND
+                                strokeJoin = AndroidPaint.Join.ROUND
+                            }
+                            layerCanvas.drawPath(stroke.path.asAndroidPath(), paint)
                         }
-                        canvas.drawPath(stroke.path.asAndroidPath(), paint)
+                        val layerPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                            alpha = (layer.opacity * 255f).toInt().coerceIn(0, 255)
+                        }
+                        outputCanvas.drawBitmap(layerBitmap, 0f, 0f, layerPaint)
+                        layerBitmap.recycle()
                     }
                     context.contentResolver.openOutputStream(uri)?.use { stream ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                        output.compress(Bitmap.CompressFormat.PNG, 100, stream)
                     } ?: error("Could not open destination")
-                    bitmap.recycle()
-                }.onSuccess { exportMessage = "Transparent PNG exported. Reference image is not included." }
+                    output.recycle()
+                }.onSuccess { exportMessage = "Layered transparent PNG exported as a flattened image." }
                     .onFailure { exportMessage = "Export failed: ${it.message ?: "unknown error"}" }
             }
         }
     }
 
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF070A14)).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        Modifier.fillMaxSize().background(Color(0xFF070A14)).padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("SKULL DRAWING STUDIO", color = Color(0xFF00E5FF), fontSize = 18.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("SKULL DRAWING STUDIO", color = Color(0xFF00E5FF), fontSize = 17.sp)
             TextButton(onClick = onClose) { Text("CLOSE") }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilterChip(selected = !eraser, onClick = { eraser = false }, label = { Text("Brush") })
-            FilterChip(selected = eraser, onClick = { eraser = true }, label = { Text("Eraser") })
-            OutlinedButton(onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) }, enabled = strokes.isNotEmpty()) { Text("Undo") }
-            OutlinedButton(onClick = { strokes.clear() }, enabled = strokes.isNotEmpty()) { Text("Clear") }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            DrawTool.values().forEach { item ->
+                FilterChip(selected = tool == item, onClick = { tool = item }, label = { Text(item.label) })
+            }
+            OutlinedButton(onClick = {
+                val layer = activeLayer
+                if (layer.strokes.isNotEmpty()) layer.strokes.removeAt(layer.strokes.lastIndex)
+            }, enabled = activeLayer.strokes.isNotEmpty()) { Text("Undo") }
+            OutlinedButton(onClick = { activeLayer.strokes.clear() }, enabled = activeLayer.strokes.isNotEmpty()) { Text("Clear") }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = { referencePicker.launch("image/*") }, modifier = Modifier.weight(1f)) { Text("ADD REFERENCE", fontSize = 11.sp) }
-            OutlinedButton(onClick = { referenceUri = null }, enabled = referenceUri != null, modifier = Modifier.weight(1f)) { Text("REMOVE IMAGE", fontSize = 11.sp) }
+            Button(onClick = { referencePicker.launch("image/*") }, modifier = Modifier.weight(1f)) { Text("ADD REFERENCE", fontSize = 10.sp) }
+            OutlinedButton(onClick = { referenceUri = null }, enabled = referenceUri != null, modifier = Modifier.weight(1f)) { Text("REMOVE", fontSize = 10.sp) }
         }
         if (referenceUri != null) {
-            Text("Reference opacity: ${(referenceOpacity * 100).toInt()}%  •  Zoom: ${"%.1f".format(referenceZoom)}x", color = Color.LightGray, fontSize = 11.sp)
+            Text("Reference opacity ${(referenceOpacity * 100).toInt()}% • Zoom ${"%.1f".format(referenceZoom)}x", color = Color.LightGray, fontSize = 10.sp)
             Slider(value = referenceOpacity, onValueChange = { referenceOpacity = it }, valueRange = 0.05f..1f)
             Slider(value = referenceZoom, onValueChange = { referenceZoom = it }, valueRange = 0.5f..2.5f)
         }
-        Text("FULL COLOUR PICKER • HSV", color = Color(0xFF00E5FF), fontSize = 12.sp)
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Box(Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(selectedColor).border(1.dp, Color.White, RoundedCornerShape(8.dp)))
-            Spacer(Modifier.width(8.dp))
-            Text("#${selectedColor.value.toLong().toString(16).takeLast(8).uppercase()}", color = Color.White, fontSize = 12.sp)
+        Text("FULL COLOUR PICKER • HSV", color = Color(0xFF00E5FF), fontSize = 11.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(25.dp).clip(RoundedCornerShape(6.dp)).background(selectedColor).border(1.dp, Color.White, RoundedCornerShape(6.dp)))
+            Spacer(Modifier.width(7.dp))
+            Text("#${selectedColor.value.toLong().toString(16).takeLast(8).uppercase()}", color = Color.White, fontSize = 11.sp)
         }
-        Text("Hue", color = Color.LightGray, fontSize = 11.sp)
-        Slider(value = hue, onValueChange = { hue = it; eraser = false }, valueRange = 0f..360f)
-        Text("Saturation", color = Color.LightGray, fontSize = 11.sp)
-        Slider(value = saturation, onValueChange = { saturation = it; eraser = false }, valueRange = 0f..1f)
-        Text("Brightness", color = Color.LightGray, fontSize = 11.sp)
-        Slider(value = brightness, onValueChange = { brightness = it; eraser = false }, valueRange = 0.05f..1f)
-        Text("Brush size: ${brushWidth.toInt()} px", color = Color.LightGray, fontSize = 11.sp)
+        Text("Hue", color = Color.LightGray, fontSize = 10.sp)
+        Slider(value = hue, onValueChange = { hue = it; if (tool == DrawTool.ERASER) tool = DrawTool.BRUSH }, valueRange = 0f..360f)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Saturation", color = Color.LightGray, fontSize = 10.sp)
+                Slider(value = saturation, onValueChange = { saturation = it }, valueRange = 0f..1f)
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Brightness", color = Color.LightGray, fontSize = 10.sp)
+                Slider(value = brightness, onValueChange = { brightness = it }, valueRange = 0.05f..1f)
+            }
+        }
+        Text("Brush size: ${brushWidth.toInt()} px", color = Color.LightGray, fontSize = 10.sp)
         Slider(value = brushWidth, onValueChange = { brushWidth = it }, valueRange = 1f..48f)
 
         Box(
-            Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(12.dp))
+            Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF182235))
-                .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(12.dp))
+                .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(10.dp))
                 .onSizeChanged {
                     canvasWidth = it.width.toFloat()
                     canvasHeight = it.height.toFloat()
@@ -149,11 +185,9 @@ fun DrawingEditor(onClose: () -> Unit) {
                 )
             }
             Canvas(
-                Modifier.fillMaxSize().pointerInput(eraser, selectedColor, brushWidth) {
+                Modifier.fillMaxSize().pointerInput(tool, selectedColor, brushWidth, selectedLayer) {
                     detectDragGestures(
-                        onDragStart = { start ->
-                            currentPath = Path().apply { moveTo(start.x, start.y) }
-                        },
+                        onDragStart = { start -> currentPath = Path().apply { moveTo(start.x, start.y) } },
                         onDrag = { change, _ ->
                             val previous = currentPath
                             currentPath = Path().apply {
@@ -164,7 +198,19 @@ fun DrawingEditor(onClose: () -> Unit) {
                         },
                         onDragEnd = {
                             currentPath?.let { path ->
-                                strokes.add(InkStroke(path, if (eraser) Color.Transparent else selectedColor, if (eraser) brushWidth * 3f else brushWidth, eraser))
+                                val erasing = tool == DrawTool.ERASER
+                                val alpha = when (tool) {
+                                    DrawTool.PENCIL -> 0.62f
+                                    DrawTool.MARKER -> 0.38f
+                                    else -> 1f
+                                }
+                                val width = when (tool) {
+                                    DrawTool.PENCIL -> brushWidth * 0.65f
+                                    DrawTool.MARKER -> brushWidth * 2.2f
+                                    DrawTool.ERASER -> brushWidth * 3f
+                                    else -> brushWidth
+                                }
+                                activeLayer.strokes.add(InkStroke(path, if (erasing) Color.Transparent else selectedColor, width, erasing, alpha))
                             }
                             currentPath = null
                         },
@@ -172,19 +218,47 @@ fun DrawingEditor(onClose: () -> Unit) {
                     )
                 }
             ) {
-                strokes.forEach { stroke ->
-                    if (stroke.erase) {
-                        drawPath(stroke.path, Color(0xFF182235), style = Stroke(stroke.width, cap = StrokeCap.Round))
-                    } else {
-                        drawPath(stroke.path, stroke.color, style = Stroke(stroke.width, cap = StrokeCap.Round))
+                layers.forEach { layer ->
+                    if (layer.visible) {
+                        layer.strokes.forEach { stroke ->
+                            if (stroke.erase) {
+                                drawPath(stroke.path, Color(0xFF182235), alpha = layer.opacity, style = Stroke(stroke.width, cap = StrokeCap.Round))
+                            } else {
+                                drawPath(stroke.path, stroke.color, alpha = stroke.alpha * layer.opacity, style = Stroke(stroke.width, cap = StrokeCap.Round))
+                            }
+                        }
                     }
                 }
                 currentPath?.let {
-                    drawPath(it, if (eraser) Color(0xFF182235) else selectedColor, style = Stroke(if (eraser) brushWidth * 3f else brushWidth, cap = StrokeCap.Round))
+                    val erase = tool == DrawTool.ERASER
+                    val width = if (erase) brushWidth * 3f else if (tool == DrawTool.MARKER) brushWidth * 2.2f else brushWidth
+                    drawPath(it, if (erase) Color(0xFF182235) else selectedColor, alpha = if (tool == DrawTool.PENCIL) 0.62f else if (tool == DrawTool.MARKER) 0.38f else 1f, style = Stroke(width, cap = StrokeCap.Round))
                 }
             }
         }
-        Text(exportMessage, color = Color.LightGray, fontSize = 10.sp)
+        Text("LAYERS • ${layers.size}", color = Color(0xFF00E5FF), fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+            layers.forEachIndexed { index, layer ->
+                FilterChip(selected = selectedLayer == index, onClick = { selectedLayer = index }, label = { Text((if (layer.visible) "◉ " else "○ ") + layer.title, fontSize = 10.sp) })
+            }
+            OutlinedButton(onClick = {
+                layers.add(SketchLayer("Layer ${layers.size + 1}"))
+                selectedLayer = layers.lastIndex
+            }) { Text("+ Layer") }
+            OutlinedButton(onClick = {
+                if (layers.size > 1) {
+                    layers.removeAt(selectedLayer)
+                    selectedLayer = selectedLayer.coerceAtMost(layers.lastIndex)
+                }
+            }, enabled = layers.size > 1) { Text("Delete") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Selected: ${activeLayer.title}", color = Color.White, fontSize = 10.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = { activeLayer.visible = !activeLayer.visible }) { Text(if (activeLayer.visible) "Hide" else "Show") }
+        }
+        Text("Layer opacity: ${(activeLayer.opacity * 100).toInt()}%", color = Color.LightGray, fontSize = 10.sp)
+        Slider(value = activeLayer.opacity, onValueChange = { activeLayer.opacity = it }, valueRange = 0f..1f)
+        Text(exportMessage, color = Color.LightGray, fontSize = 9.sp)
         Button(onClick = { exportLauncher.launch("skull-studio-drawing.png") }, modifier = Modifier.fillMaxWidth()) {
             Text("EXPORT TRANSPARENT PNG")
         }
