@@ -201,9 +201,11 @@ fun StudioApp() {
 
             SectionTitle("LOOP ANIMATION PRESETS", cyan)
             Text("Select a continuously repeating motion preview. Separate transparent body-part layers are needed for proper limb articulation.", color = Color.LightGray, fontSize = 11.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                MotionPreset.values().forEach { preset ->
-                    FilterChip(selected = motionPreset == preset, onClick = { motionPreset = preset }, label = { Text(preset.title, fontSize = 10.sp) })
+            MotionPreset.values().toList().chunked(3).forEach { presetRow ->
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                    presetRow.forEach { preset ->
+                        FilterChip(selected = motionPreset == preset, onClick = { motionPreset = preset }, label = { Text(preset.title, fontSize = 10.sp) })
+                    }
                 }
             }
             SectionTitle("CHARACTER LAYER SETUP", cyan)
