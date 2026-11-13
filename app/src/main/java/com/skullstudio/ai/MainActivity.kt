@@ -62,6 +62,7 @@ fun StudioApp() {
     var volume by remember { mutableFloatStateOf(0.8f) }
     var audioPlaying by remember { mutableStateOf(false) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var showDrawingEditor by remember { mutableStateOf(false) }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
         characterUri = it
@@ -118,12 +119,17 @@ fun StudioApp() {
     )
 
     MaterialTheme(colorScheme = darkColorScheme(background = bg, surface = panel, primary = cyan)) {
-        Column(
+        if (showDrawingEditor) {
+            DrawingEditor(onClose = { showDrawingEditor = false })
+        } else Column(
             Modifier.fillMaxSize().background(bg).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("SKULL STUDIO AI", color = cyan, fontSize = 25.sp)
             Text("2D CHARACTER • LAYERS • AUDIO", color = Color.LightGray, fontSize = 11.sp)
+            OutlinedButton(onClick = { showDrawingEditor = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("OPEN DRAWING EDITOR")
+            }
 
             BoxWithConstraints(
                 Modifier.fillMaxWidth()
