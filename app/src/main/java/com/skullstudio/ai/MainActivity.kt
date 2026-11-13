@@ -82,14 +82,15 @@ fun StudioApp() {
     LaunchedEffect(volume, player) { player?.setVolume(volume, volume) }
 
     val transition = rememberInfiniteTransition(label = "layer-motion")
+    // Continuous sine cycle avoids the abrupt direction-change pause of a fast reverse tween.
     val phase by transition.animateFloat(
-        initialValue = -1f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(850, easing = LinearEasing), RepeatMode.Reverse),
+        initialValue = 0f, targetValue = (2f * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(3200, easing = LinearEasing), RepeatMode.Restart),
         label = "motion-phase"
     )
     val windPhase by transition.animateFloat(
         initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
+        animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
         label = "wind-phase"
     )
 
@@ -114,18 +115,20 @@ fun StudioApp() {
                         modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit
                     )
                     layers.forEachIndexed { index, layer ->
-                        val amount = if (animateLayers) phase else 0f
+                        val wave = kotlin.math.sin(phase + index * 0.72f).toFloat()
+                        val amount = if (animateLayers) wave else 0f
+                        // Small amplitudes look more natural for a still illustration.
                         val rotation = when (layer.kind) {
-                            LayerKind.HAIR -> amount * 3.5f
-                            LayerKind.ARM -> amount * 7f
-                            LayerKind.CLOTH -> amount * 1.8f
-                            LayerKind.LEG -> amount * 6f
+                            LayerKind.HAIR -> amount * 1.6f
+                            LayerKind.ARM -> amount * 2.2f
+                            LayerKind.CLOTH -> amount * 0.8f
+                            LayerKind.LEG -> amount * 1.8f
                         }
                         val vertical = when (layer.kind) {
-                            LayerKind.HAIR -> amount * 4f
-                            LayerKind.ARM -> amount * 1.5f
-                            LayerKind.CLOTH -> amount * 2.5f
-                            LayerKind.LEG -> amount * 2f
+                            LayerKind.HAIR -> amount * 2.2f
+                            LayerKind.ARM -> amount * 0.8f
+                            LayerKind.CLOTH -> amount * 1.2f
+                            LayerKind.LEG -> amount * 1.0f
                         }
                         AsyncImage(
                             model = layer.uri, contentDescription = "${layer.kind.title} animation layer",
